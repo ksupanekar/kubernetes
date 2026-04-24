@@ -107,6 +107,7 @@ func newStorage(t *testing.T) (customresource.CustomResourceStorage, *etcd3testi
 			status,
 			scale,
 			nil,
+			"",
 		),
 		restOptions,
 		[]string{"all"},

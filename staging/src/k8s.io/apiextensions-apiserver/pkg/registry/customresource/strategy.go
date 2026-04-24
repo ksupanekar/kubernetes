@@ -65,6 +65,7 @@ type customResourceStrategy struct {
 	scale              *apiextensions.CustomResourceSubresourceScale
 	kind               schema.GroupVersionKind
 	selectableFieldSet []selectableField
+	watchIndexLabel    string
 }
 
 type selectableField struct {
@@ -73,7 +74,7 @@ type selectableField struct {
 	err       error
 }
 
-func NewStrategy(typer runtime.ObjectTyper, namespaceScoped bool, kind schema.GroupVersionKind, schemaValidator, statusSchemaValidator validation.SchemaValidator, structuralSchema *structuralschema.Structural, status *apiextensions.CustomResourceSubresourceStatus, scale *apiextensions.CustomResourceSubresourceScale, selectableFields []v1.SelectableField) customResourceStrategy {
+func NewStrategy(typer runtime.ObjectTyper, namespaceScoped bool, kind schema.GroupVersionKind, schemaValidator, statusSchemaValidator validation.SchemaValidator, structuralSchema *structuralschema.Structural, status *apiextensions.CustomResourceSubresourceStatus, scale *apiextensions.CustomResourceSubresourceScale, selectableFields []v1.SelectableField, watchIndexLabel string) customResourceStrategy {
 	var celValidator *cel.Validator
 	celValidator = cel.NewValidator(structuralSchema, true, celconfig.PerCallLimit) // CEL programs are compiled and cached here
 
@@ -92,6 +93,7 @@ func NewStrategy(typer runtime.ObjectTyper, namespaceScoped bool, kind schema.Gr
 		structuralSchema: structuralSchema,
 		celValidator:     celValidator,
 		kind:             kind,
+		watchIndexLabel:  watchIndexLabel,
 	}
 	if utilfeature.DefaultFeatureGate.Enabled(apiextensionsfeatures.CustomResourceFieldSelectors) {
 		strategy.selectableFieldSet = prepareSelectableFields(selectableFields)
@@ -394,11 +396,15 @@ func objectMetaFieldsSet(objectMeta metav1.Object, namespaceScoped bool) fields.
 // watch events from etcd to clients of the apiserver only interested in specific
 // labels/fields.
 func (a customResourceStrategy) MatchCustomResourceDefinitionStorage(label labels.Selector, field fields.Selector) apiserverstorage.SelectionPredicate {
-	return apiserverstorage.SelectionPredicate{
+	pred := apiserverstorage.SelectionPredicate{
 		Label:    label,
 		Field:    field,
 		GetAttrs: a.GetAttrs,
 	}
+	if a.watchIndexLabel != "" {
+		pred.IndexLabels = []string{a.watchIndexLabel}
+	}
+	return pred
 }
 
 // OpenAPIv3 type/maxLength/maxItems/MaxProperties/required/enum violation/wrong type field validation failures are viewed as blocking err for CEL validation

@@ -33,6 +33,7 @@ import (
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
 	apiserverstorage "k8s.io/apiserver/pkg/storage"
+	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
@@ -71,7 +72,11 @@ func NewStorage(resource schema.GroupResource, singularResource schema.GroupReso
 	}
 	options := &generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: strategy.GetAttrs}
 	if watchIndexLabel != "" {
-		options.TriggerFunc = map[string]apiserverstorage.IndexerFunc{"l:" + watchIndexLabel: labelIndexerFunc(watchIndexLabel)}
+		indexName := "l:" + watchIndexLabel
+		options.TriggerFunc = map[string]apiserverstorage.IndexerFunc{indexName: labelIndexerFunc(watchIndexLabel)}
+		options.Indexers = &cache.Indexers{
+			indexName: labelCacheIndexFunc(watchIndexLabel),
+		}
 	}
 	if err := store.CompleteWithOptions(options); err != nil {
 		return storage, fmt.Errorf("failed to update store with options: %w", err)
@@ -386,5 +391,21 @@ func labelIndexerFunc(labelKey string) apiserverstorage.IndexerFunc {
 			return ""
 		}
 		return labels[labelKey]
+	}
+}
+
+// labelCacheIndexFunc returns a cache.IndexFunc that extracts the value of the
+// given label key from a cached object. Used for LIST indexing in the watch cache.
+func labelCacheIndexFunc(labelKey string) cache.IndexFunc {
+	return func(obj interface{}) ([]string, error) {
+		accessor, err := meta.Accessor(obj.(runtime.Object))
+		if err != nil {
+			return nil, err
+		}
+		labels := accessor.GetLabels()
+		if labels == nil {
+			return []string{""}, nil
+		}
+		return []string{labels[labelKey]}, nil
 	}
 }

@@ -870,6 +870,7 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 				statusSpec,
 				scaleSpec,
 				v.SelectableFields,
+				watchIndexLabel,
 			),
 			crdConversionRESTOptionsGetter{
 				RESTOptionsGetter:     r.restOptionsGetter,

@@ -172,8 +172,10 @@ func (s *SelectionPredicate) MatcherIndex(ctx context.Context) []MatchValue {
 		}
 	}
 	for _, label := range s.IndexLabels {
-		if value, ok := s.Label.RequiresExactMatch(label); ok {
-			result = append(result, MatchValue{IndexName: LabelIndex(label), Value: value})
+		if values, ok := s.Label.RequiresExactMatchOrIn(label); ok {
+			for _, value := range values {
+				result = append(result, MatchValue{IndexName: LabelIndex(label), Value: value})
+			}
 		}
 	}
 	return result
