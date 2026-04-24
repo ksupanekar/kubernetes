@@ -112,6 +112,7 @@ func newStorage(t *testing.T) (customresource.CustomResourceStorage, *etcd3testi
 		[]string{"all"},
 		table,
 		managedfields.ResourcePathMappings{},
+		"",
 	)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

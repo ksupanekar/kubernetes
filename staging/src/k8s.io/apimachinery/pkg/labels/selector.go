@@ -87,6 +87,12 @@ type Selector interface {
 	// requires a single specific label to be set, and if so returns the value it
 	// requires.
 	RequiresExactMatch(label string) (value string, found bool)
+
+	// RequiresExactMatchOrIn returns all values that a given label key must match.
+	// For Equals/DoubleEquals operators it returns a single-element slice.
+	// For In operators it returns all values in the set.
+	// For other operators or if the label is not constrained, it returns (nil, false).
+	RequiresExactMatchOrIn(label string) (values []string, found bool)
 }
 
 // Sharing this saves 1 alloc per use; this is safe because it's immutable.
@@ -107,6 +113,9 @@ func (n nothingSelector) Requirements() (Requirements, bool) { return nil, false
 func (n nothingSelector) DeepCopySelector() Selector         { return n }
 func (n nothingSelector) RequiresExactMatch(label string) (value string, found bool) {
 	return "", false
+}
+func (n nothingSelector) RequiresExactMatchOrIn(label string) (values []string, found bool) {
+	return nil, false
 }
 
 // Sharing this saves 1 alloc per use; this is safe because it's immutable.
@@ -452,6 +461,24 @@ func (s internalSelector) RequiresExactMatch(label string) (value string, found 
 		}
 	}
 	return "", false
+}
+
+// RequiresExactMatchOrIn returns all values that a given label key must match.
+// For Equals/DoubleEquals/In operators, it returns all values in the requirement.
+// For other operators or if the label is not constrained, it returns (nil, false).
+func (s internalSelector) RequiresExactMatchOrIn(label string) ([]string, bool) {
+	for ix := range s {
+		if s[ix].key == label {
+			switch s[ix].operator {
+			case selection.Equals, selection.DoubleEquals, selection.In:
+				if len(s[ix].strValues) >= 1 {
+					return s[ix].strValues, true
+				}
+			}
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 // Token represents constant definition for lexer token
@@ -1061,6 +1088,14 @@ func (s ValidatedSetSelector) DeepCopySelector() Selector {
 func (s ValidatedSetSelector) RequiresExactMatch(label string) (value string, found bool) {
 	v, f := s[label]
 	return v, f
+}
+
+func (s ValidatedSetSelector) RequiresExactMatchOrIn(label string) ([]string, bool) {
+	v, f := s[label]
+	if f {
+		return []string{v}, true
+	}
+	return nil, false
 }
 
 func (s ValidatedSetSelector) toFullSelector() Selector {
