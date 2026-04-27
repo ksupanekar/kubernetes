@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,6 +32,8 @@ import (
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
+	apiserverstorage "k8s.io/apiserver/pkg/storage"
+	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
@@ -41,7 +44,7 @@ type CustomResourceStorage struct {
 	Scale          *ScaleREST
 }
 
-func NewStorage(resource schema.GroupResource, singularResource schema.GroupResource, kind, listKind schema.GroupVersionKind, strategy customResourceStrategy, optsGetter generic.RESTOptionsGetter, categories []string, tableConvertor rest.TableConvertor, replicasPathMapping managedfields.ResourcePathMappings) (CustomResourceStorage, error) {
+func NewStorage(resource schema.GroupResource, singularResource schema.GroupResource, kind, listKind schema.GroupVersionKind, strategy customResourceStrategy, optsGetter generic.RESTOptionsGetter, categories []string, tableConvertor rest.TableConvertor, replicasPathMapping managedfields.ResourcePathMappings, watchIndexLabel string) (CustomResourceStorage, error) {
 	var storage CustomResourceStorage
 	store := &genericregistry.Store{
 		NewFunc: func() runtime.Object {
@@ -68,6 +71,13 @@ func NewStorage(resource schema.GroupResource, singularResource schema.GroupReso
 		TableConvertor: tableConvertor,
 	}
 	options := &generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: strategy.GetAttrs}
+	if watchIndexLabel != "" {
+		indexName := "l:" + watchIndexLabel
+		options.TriggerFunc = map[string]apiserverstorage.IndexerFunc{indexName: labelIndexerFunc(watchIndexLabel)}
+		options.Indexers = &cache.Indexers{
+			indexName: labelCacheIndexFunc(watchIndexLabel),
+		}
+	}
 	if err := store.CompleteWithOptions(options); err != nil {
 		return storage, fmt.Errorf("failed to update store with options: %w", err)
 	}
@@ -366,4 +376,36 @@ func (i *scaleUpdatedObjectInfo) UpdatedObject(ctx context.Context, oldObj runti
 	cr.SetManagedFields(updatedEntries)
 
 	return cr, nil
+}
+
+// labelIndexerFunc returns a storage.IndexerFunc that extracts the value of the
+// given label key from an object. Used as a TriggerFunc for watch dispatch indexing.
+func labelIndexerFunc(labelKey string) apiserverstorage.IndexerFunc {
+	return func(obj runtime.Object) string {
+		accessor, err := meta.Accessor(obj)
+		if err != nil {
+			return ""
+		}
+		labels := accessor.GetLabels()
+		if labels == nil {
+			return ""
+		}
+		return labels[labelKey]
+	}
+}
+
+// labelCacheIndexFunc returns a cache.IndexFunc that extracts the value of the
+// given label key from a cached object. Used for LIST indexing in the watch cache.
+func labelCacheIndexFunc(labelKey string) cache.IndexFunc {
+	return func(obj interface{}) ([]string, error) {
+		accessor, err := meta.Accessor(obj.(runtime.Object))
+		if err != nil {
+			return nil, err
+		}
+		labels := accessor.GetLabels()
+		if labels == nil {
+			return []string{""}, nil
+		}
+		return []string{labels[labelKey]}, nil
+	}
 }

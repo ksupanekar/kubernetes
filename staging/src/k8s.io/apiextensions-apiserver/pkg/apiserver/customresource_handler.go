@@ -852,6 +852,9 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 
 		listKind := schema.GroupVersionKind{Group: crd.Spec.Group, Version: v.Name, Kind: crd.Status.AcceptedNames.ListKind}
 
+		// Extract optional watch index label annotation for O(1) watch dispatch
+		watchIndexLabel := crd.Annotations["crusoe.ai/watch-index-label"]
+
 		storages[v.Name], err = customresource.NewStorage(
 			resource.GroupResource(),
 			singularResource.GroupResource(),
@@ -867,6 +870,7 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 				statusSpec,
 				scaleSpec,
 				v.SelectableFields,
+				watchIndexLabel,
 			),
 			crdConversionRESTOptionsGetter{
 				RESTOptionsGetter:     r.restOptionsGetter,
@@ -880,6 +884,7 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 			crd.Status.AcceptedNames.Categories,
 			table,
 			replicasPathInCustomResource,
+			watchIndexLabel,
 		)
 		if err != nil {
 			return nil, err

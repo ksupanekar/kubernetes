@@ -643,14 +643,28 @@ func (w *watchCache) listLatestRV(key, continueKey string, matchValues []storage
 	// This isn't the place where we do "final filtering" - only some "prefiltering" is happening here. So the only
 	// requirement here is to NOT miss anything that should be returned. We can return as many non-matching items as we
 	// want - they will be filtered out later. The fact that we return less things is only further performance improvement.
-	// TODO: if multiple indexes match, return the one with the fewest items, so as to do as much filtering as possible.
-	for _, matchValue := range matchValues {
-		if result, err := w.store.ByIndex(matchValue.IndexName, matchValue.Value); err == nil {
-			result, err = filterPrefixAndOrder(key, result)
-			return listResp{
-				Items:           result,
-				ResourceVersion: w.resourceVersion,
-			}, matchValue.IndexName, err
+	if len(matchValues) > 0 {
+		// Group matchValues by index name so we can merge results for multi-value
+		// selectors (e.g., label "vpc-id in (42,43,...,51)" produces multiple
+		// MatchValues for the same index). Each ByIndex call is O(1).
+		indexGroups := make(map[string][]string)
+		for _, mv := range matchValues {
+			indexGroups[mv.IndexName] = append(indexGroups[mv.IndexName], mv.Value)
+		}
+		for indexName, values := range indexGroups {
+			var merged []interface{}
+			for _, value := range values {
+				if result, err := w.store.ByIndex(indexName, value); err == nil {
+					merged = append(merged, result...)
+				}
+			}
+			if len(merged) > 0 {
+				merged, err = filterPrefixAndOrder(key, merged)
+				return listResp{
+					Items:           merged,
+					ResourceVersion: w.resourceVersion,
+				}, indexName, err
+			}
 		}
 	}
 	if store, ok := w.store.(store.OrderedLister); ok {
