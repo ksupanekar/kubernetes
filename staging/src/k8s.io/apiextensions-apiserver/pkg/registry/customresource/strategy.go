@@ -394,11 +394,17 @@ func objectMetaFieldsSet(objectMeta metav1.Object, namespaceScoped bool) fields.
 // watch events from etcd to clients of the apiserver only interested in specific
 // labels/fields.
 func (a customResourceStrategy) MatchCustomResourceDefinitionStorage(label labels.Selector, field fields.Selector) apiserverstorage.SelectionPredicate {
-	return apiserverstorage.SelectionPredicate{
+	pred := apiserverstorage.SelectionPredicate{
 		Label:    label,
 		Field:    field,
 		GetAttrs: a.GetAttrs,
 	}
+	for _, sf := range a.selectableFieldSet {
+		if sf.err == nil {
+			pred.IndexFields = append(pred.IndexFields, sf.name)
+		}
+	}
+	return pred
 }
 
 // OpenAPIv3 type/maxLength/maxItems/MaxProperties/required/enum violation/wrong type field validation failures are viewed as blocking err for CEL validation

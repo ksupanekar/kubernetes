@@ -31,6 +31,8 @@ import (
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
+	apiserverstorage "k8s.io/apiserver/pkg/storage"
+	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
@@ -68,6 +70,24 @@ func NewStorage(resource schema.GroupResource, singularResource schema.GroupReso
 		TableConvertor: tableConvertor,
 	}
 	options := &generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: strategy.GetAttrs}
+	if len(strategy.selectableFieldSet) > 0 {
+		// Configure each selectableField as a TriggerFunc + cache Indexer for O(1) watch dispatch.
+		// This gives CRDs the same indexed dispatch that built-in types get via spec.nodeName.
+		triggerFuncs := map[string]apiserverstorage.IndexerFunc{}
+		indexers := cache.Indexers{}
+		for _, sf := range strategy.selectableFieldSet {
+			if sf.err != nil {
+				continue
+			}
+			fieldName := sf.name
+			triggerFuncs[fieldName] = selectableFieldIndexerFunc(sf)
+			indexers[apiserverstorage.FieldIndex(fieldName)] = selectableFieldCacheIndexFunc(sf)
+		}
+		if len(triggerFuncs) > 0 {
+			options.TriggerFunc = triggerFuncs
+			options.Indexers = &indexers
+		}
+	}
 	if err := store.CompleteWithOptions(options); err != nil {
 		return storage, fmt.Errorf("failed to update store with options: %w", err)
 	}
@@ -366,4 +386,40 @@ func (i *scaleUpdatedObjectInfo) UpdatedObject(ctx context.Context, oldObj runti
 	cr.SetManagedFields(updatedEntries)
 
 	return cr, nil
+}
+
+// selectableFieldIndexerFunc returns a storage.IndexerFunc that extracts the value
+// of a selectableField from an unstructured object. Used as TriggerFunc for watch dispatch.
+func selectableFieldIndexerFunc(sf selectableField) apiserverstorage.IndexerFunc {
+	return func(obj runtime.Object) string {
+		us, ok := obj.(runtime.Unstructured)
+		if !ok {
+			return ""
+		}
+		results, err := sf.fieldPath.FindResults(us.UnstructuredContent())
+		if err != nil || len(results) == 0 || len(results[0]) == 0 {
+			return ""
+		}
+		return fmt.Sprint(results[0][0].Interface())
+	}
+}
+
+// selectableFieldCacheIndexFunc returns a cache.IndexFunc for LIST indexing
+// on a selectableField.
+func selectableFieldCacheIndexFunc(sf selectableField) cache.IndexFunc {
+	return func(obj interface{}) ([]string, error) {
+		rtObj, ok := obj.(runtime.Object)
+		if !ok {
+			return nil, fmt.Errorf("not a runtime.Object")
+		}
+		us, ok := rtObj.(runtime.Unstructured)
+		if !ok {
+			return []string{""}, nil
+		}
+		results, err := sf.fieldPath.FindResults(us.UnstructuredContent())
+		if err != nil || len(results) == 0 || len(results[0]) == 0 {
+			return []string{""}, nil
+		}
+		return []string{fmt.Sprint(results[0][0].Interface())}, nil
+	}
 }
