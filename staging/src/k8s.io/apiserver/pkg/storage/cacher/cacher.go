@@ -145,12 +145,14 @@ type indexedWatchers struct {
 	valueWatchers map[string]watchersMap
 }
 
-func (i *indexedWatchers) addWatcher(w *cacheWatcher, number int, scope namespacedName, value string, supported bool) {
-	if supported {
-		if _, ok := i.valueWatchers[value]; !ok {
-			i.valueWatchers[value] = watchersMap{}
+func (i *indexedWatchers) addWatcher(w *cacheWatcher, number int, scope namespacedName, values []string, supported bool) {
+	if supported && len(values) > 0 {
+		for _, value := range values {
+			if _, ok := i.valueWatchers[value]; !ok {
+				i.valueWatchers[value] = watchersMap{}
+			}
+			i.valueWatchers[value].addWatcher(w, number)
 		}
-		i.valueWatchers[value].addWatcher(w, number)
 	} else {
 		scopedWatchers, ok := i.allWatchers[scope]
 		if !ok {
@@ -161,11 +163,15 @@ func (i *indexedWatchers) addWatcher(w *cacheWatcher, number int, scope namespac
 	}
 }
 
-func (i *indexedWatchers) deleteWatcher(number int, scope namespacedName, value string, supported bool) {
-	if supported {
-		i.valueWatchers[value].deleteWatcher(number)
-		if len(i.valueWatchers[value]) == 0 {
-			delete(i.valueWatchers, value)
+func (i *indexedWatchers) deleteWatcher(number int, scope namespacedName, values []string, supported bool) {
+	if supported && len(values) > 0 {
+		for _, value := range values {
+			if wm, ok := i.valueWatchers[value]; ok {
+				wm.deleteWatcher(number)
+				if len(wm) == 0 {
+					delete(i.valueWatchers, value)
+				}
+			}
 		}
 	} else {
 		i.allWatchers[scope].deleteWatcher(number)
@@ -555,12 +561,15 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		scope.namespace = ""
 	}
 
-	triggerValue, triggerSupported := "", false
+	var triggerValues []string
+	triggerSupported := false
 	if c.indexedTrigger != nil {
 		for _, field := range pred.IndexFields {
 			if field == c.indexedTrigger.indexName {
-				if value, ok := pred.Field.RequiresExactMatch(field); ok {
-					triggerValue, triggerSupported = value, true
+				// Try multi-value (in()) first, falls back to exact match
+				if values, ok := pred.Field.RequiresExactMatchOrIn(field); ok {
+					triggerValues = values
+					triggerSupported = true
 					break
 				}
 			}
@@ -656,10 +665,10 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		}
 
 		// Update watcher.forget function once we can compute it.
-		watcher.forget = forgetWatcher(c, watcher, c.watcherIdx, scope, triggerValue, triggerSupported)
+		watcher.forget = forgetWatcher(c, watcher, c.watcherIdx, scope, triggerValues, triggerSupported)
 		// Update the bookMarkAfterResourceVersion
 		watcher.setBookmarkAfterResourceVersion(bookmarkAfterResourceVersionFn())
-		c.watchers.addWatcher(watcher, c.watcherIdx, scope, triggerValue, triggerSupported)
+		c.watchers.addWatcher(watcher, c.watcherIdx, scope, triggerValues, triggerSupported)
 		addedWatcher = true
 
 		// Add it to the queue only when the client support watch bookmarks.
@@ -1209,7 +1218,7 @@ func (c *Cacher) prepareKey(key string, recursive bool) (string, error) {
 	return storage.PrepareKey(c.resourcePrefix, key, recursive)
 }
 
-func forgetWatcher(c *Cacher, w *cacheWatcher, index int, scope namespacedName, triggerValue string, triggerSupported bool) func(bool) {
+func forgetWatcher(c *Cacher, w *cacheWatcher, index int, scope namespacedName, triggerValues []string, triggerSupported bool) func(bool) {
 	return func(drainWatcher bool) {
 		c.Lock()
 		defer c.Unlock()
@@ -1219,7 +1228,7 @@ func forgetWatcher(c *Cacher, w *cacheWatcher, index int, scope namespacedName, 
 		// It's possible that the watcher is already not in the structure (e.g. in case of
 		// simultaneous Stop() and terminateAllWatchers(), but it is safe to call stopLocked()
 		// on a watcher multiple times.
-		c.watchers.deleteWatcher(index, scope, triggerValue, triggerSupported)
+		c.watchers.deleteWatcher(index, scope, triggerValues, triggerSupported)
 		c.stopWatcherLocked(w)
 	}
 }

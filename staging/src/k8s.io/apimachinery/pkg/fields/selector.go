@@ -38,6 +38,12 @@ type Selector interface {
 	// requires.
 	RequiresExactMatch(field string) (value string, found bool)
 
+	// RequiresExactMatchOrIn returns the value(s) required for a field.
+	// For exact match (=, ==) returns a single-element slice.
+	// For in() returns all values in the set.
+	// Returns false if the field is not constrained to specific values.
+	RequiresExactMatchOrIn(field string) (values []string, found bool)
+
 	// Transform returns a new copy of the selector after TransformFunc has been
 	// applied to the entire selector, or an error if fn returns an error.
 	// If for a given requirement both field and value are transformed to empty
@@ -64,6 +70,9 @@ func (n nothingSelector) Requirements() Requirements { return nil }
 func (n nothingSelector) DeepCopySelector() Selector { return n }
 func (n nothingSelector) RequiresExactMatch(field string) (value string, found bool) {
 	return "", false
+}
+func (n nothingSelector) RequiresExactMatchOrIn(field string) (values []string, found bool) {
+	return nil, false
 }
 func (n nothingSelector) Transform(fn TransformFunc) (Selector, error) { return n, nil }
 
@@ -94,6 +103,13 @@ func (t *hasTerm) RequiresExactMatch(field string) (value string, found bool) {
 		return t.value, true
 	}
 	return "", false
+}
+
+func (t *hasTerm) RequiresExactMatchOrIn(field string) (values []string, found bool) {
+	if t.field == field {
+		return []string{t.value}, true
+	}
+	return nil, false
 }
 
 func (t *hasTerm) Transform(fn TransformFunc) (Selector, error) {
@@ -142,6 +158,10 @@ func (t *notHasTerm) Empty() bool {
 
 func (t *notHasTerm) RequiresExactMatch(field string) (value string, found bool) {
 	return "", false
+}
+
+func (t *notHasTerm) RequiresExactMatchOrIn(field string) (values []string, found bool) {
+	return nil, false
 }
 
 func (t *notHasTerm) Transform(fn TransformFunc) (Selector, error) {
@@ -214,6 +234,18 @@ func (t andTerm) RequiresExactMatch(field string) (string, bool) {
 	return "", false
 }
 
+func (t andTerm) RequiresExactMatchOrIn(field string) ([]string, bool) {
+	if t == nil || len([]Selector(t)) == 0 {
+		return nil, false
+	}
+	for i := range t {
+		if values, found := t[i].RequiresExactMatchOrIn(field); found {
+			return values, found
+		}
+	}
+	return nil, false
+}
+
 func (t andTerm) Transform(fn TransformFunc) (Selector, error) {
 	next := make([]Selector, 0, len([]Selector(t)))
 	for _, s := range []Selector(t) {
@@ -254,6 +286,78 @@ func (t andTerm) DeepCopySelector() Selector {
 		out[i] = t[i].DeepCopySelector()
 	}
 	return andTerm(out)
+}
+
+// inTerm matches a field against a set of values (field in (v1,v2,...)).
+type inTerm struct {
+	field  string
+	values []string
+}
+
+func (t *inTerm) Matches(ls Fields) bool {
+	v := ls.Get(t.field)
+	for _, val := range t.values {
+		if v == val {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *inTerm) Empty() bool { return false }
+
+func (t *inTerm) RequiresExactMatch(field string) (value string, found bool) {
+	if t.field == field && len(t.values) == 1 {
+		return t.values[0], true
+	}
+	return "", false
+}
+
+func (t *inTerm) RequiresExactMatchOrIn(field string) (values []string, found bool) {
+	if t.field == field {
+		return t.values, true
+	}
+	return nil, false
+}
+
+func (t *inTerm) Transform(fn TransformFunc) (Selector, error) {
+	newValues := make([]string, 0, len(t.values))
+	var newField string
+	for _, v := range t.values {
+		f, nv, err := fn(t.field, v)
+		if err != nil {
+			return nil, err
+		}
+		newField = f
+		if len(f) > 0 || len(nv) > 0 {
+			newValues = append(newValues, nv)
+		}
+	}
+	if len(newValues) == 0 {
+		return Everything(), nil
+	}
+	return &inTerm{field: newField, values: newValues}, nil
+}
+
+func (t *inTerm) Requirements() Requirements {
+	reqs := make([]Requirement, len(t.values))
+	for i, v := range t.values {
+		reqs[i] = Requirement{Field: t.field, Operator: selection.In, Value: v}
+	}
+	return reqs
+}
+
+func (t *inTerm) String() string {
+	return fmt.Sprintf("%v in (%v)", t.field, strings.Join(t.values, ","))
+}
+
+func (t *inTerm) DeepCopySelector() Selector {
+	if t == nil {
+		return nil
+	}
+	vals := make([]string, len(t.values))
+	copy(vals, t.values)
+	return &inTerm{field: t.field, values: vals}
 }
 
 // SelectorFromSet returns a Selector which will match exactly the given Set. A
@@ -384,13 +488,20 @@ func splitTerms(fieldSelector string) []string {
 	terms := make([]string, 0, 1)
 	startIndex := 0
 	inSlash := false
+	parenDepth := 0
 	for i, c := range fieldSelector {
 		switch {
 		case inSlash:
 			inSlash = false
 		case c == '\\':
 			inSlash = true
-		case c == ',':
+		case c == '(':
+			parenDepth++
+		case c == ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case c == ',' && parenDepth == 0:
 			terms = append(terms, fieldSelector[startIndex:i])
 			startIndex = i + 1
 		}
@@ -435,6 +546,11 @@ func parseSelector(selector string, fn TransformFunc) (Selector, error) {
 		if part == "" {
 			continue
 		}
+		// Check for "field in (v1,v2,...)" syntax
+		if parsed, ok := parseInTerm(part); ok {
+			items = append(items, parsed)
+			continue
+		}
 		lhs, op, rhs, ok := splitTerm(part)
 		if !ok {
 			return nil, fmt.Errorf("invalid selector: '%s'; can't understand '%s'", selector, part)
@@ -458,6 +574,25 @@ func parseSelector(selector string, fn TransformFunc) (Selector, error) {
 		return items[0].Transform(fn)
 	}
 	return andTerm(items).Transform(fn)
+}
+
+// parseInTerm parses "field in (v1,v2,...)" and returns an inTerm.
+func parseInTerm(term string) (Selector, bool) {
+	idx := strings.Index(term, " in (")
+	if idx < 0 {
+		return nil, false
+	}
+	field := strings.TrimSpace(term[:idx])
+	rest := term[idx+5:] // skip " in ("
+	if !strings.HasSuffix(rest, ")") {
+		return nil, false
+	}
+	rest = rest[:len(rest)-1] // strip trailing )
+	values := strings.Split(rest, ",")
+	for i := range values {
+		values[i] = strings.TrimSpace(values[i])
+	}
+	return &inTerm{field: field, values: values}, true
 }
 
 // OneTermEqualSelector returns an object that matches objects where one field/field equals one value.

@@ -2663,7 +2663,7 @@ func TestForgetWatcher(t *testing.T) {
 		cacher.Lock()
 		defer cacher.Unlock()
 
-		cacher.watchers.addWatcher(w, 0, namespacedName{}, "", false)
+		cacher.watchers.addWatcher(w, 0, namespacedName{}, nil, false)
 	}
 
 	addWatcher(w)

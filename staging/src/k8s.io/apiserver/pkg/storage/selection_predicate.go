@@ -162,8 +162,10 @@ func (s *SelectionPredicate) Empty() bool {
 func (s *SelectionPredicate) MatcherIndex(ctx context.Context) []MatchValue {
 	var result []MatchValue
 	for _, field := range s.IndexFields {
-		if value, ok := s.Field.RequiresExactMatch(field); ok {
-			result = append(result, MatchValue{IndexName: FieldIndex(field), Value: value})
+		if values, ok := s.Field.RequiresExactMatchOrIn(field); ok {
+			for _, value := range values {
+				result = append(result, MatchValue{IndexName: FieldIndex(field), Value: value})
+			}
 		} else if field == "metadata.namespace" {
 			// list pods in the namespace. i.e. /api/v1/namespaces/default/pods
 			if namespace, isNamespaceScope := isNamespaceScopedRequest(ctx); isNamespaceScope {
